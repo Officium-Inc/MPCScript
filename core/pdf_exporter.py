@@ -195,7 +195,7 @@ def _build_table_data(rows_df, grand_total: dict) -> list:
         table_data.append([
             Paragraph(str(row["item"]), item_style),
             Paragraph(_fmt(row["min_unit_price"]), num_style),
-            Paragraph(str(int(row["sum_qty"])), num_style),
+            Paragraph(_fmt_qty(row["sum_qty"]), num_style),
             Paragraph(_fmt(row["sum_amt"]), num_style),
             Paragraph(_fmt(row["comm"]), num_style),
             Paragraph(_fmt(row["total"]), num_style),
@@ -207,7 +207,7 @@ def _build_table_data(rows_df, grand_total: dict) -> list:
     table_data.append([
         Paragraph(gt["item"], gt_style),
         Paragraph("", gt_num_style),
-        Paragraph(str(gt["sum_qty"]), gt_num_style),
+        Paragraph(_fmt_qty(gt["sum_qty"]), gt_num_style),
         Paragraph(_fmt(gt["sum_amt"]), gt_num_style),
         Paragraph(_fmt(gt["comm"]), gt_num_style),
         Paragraph(_fmt(gt["total"]), gt_num_style),
@@ -301,5 +301,18 @@ def _fmt(value) -> str:
         return ""
     try:
         return f"{float(value):,.2f}"
+    except (TypeError, ValueError):
+        return str(value)
+
+
+def _fmt_qty(value) -> str:
+    """Format a quantity: whole numbers show without decimal, fractions show as-is.
+    e.g.  1.0 → '1',  0.5 → '0.5',  9.5 → '9.5'
+    """
+    if value is None:
+        return ""
+    try:
+        q = float(value)
+        return str(int(q)) if q == int(q) else f"{q:g}"
     except (TypeError, ValueError):
         return str(value)

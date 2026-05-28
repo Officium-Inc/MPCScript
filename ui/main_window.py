@@ -34,6 +34,7 @@ import core.isp_reader as isp_reader
 import core.pdf_exporter as pdf_exporter
 import core.raw_data_reader as raw_data_reader
 from ui.settings_dialog import SettingsDialog
+from ui.alias_dialog import AliasDialog
 
 # ---------------------------------------------------------------------------
 # Colour / style constants
@@ -73,6 +74,7 @@ class MainWindow(tk.Tk):
         self._raw_path: str = ""
         self._isp_dict: dict = {}
         self._summaries: dict = {}
+        self._aliases: dict = settings_mod.load_aliases()
         self._settings: dict = settings_mod.load()
 
         self._apply_styles()
@@ -292,6 +294,16 @@ class MainWindow(tk.Tk):
         self.wait_window(dlg)
         self._settings = settings_mod.load()
 
+    def _apply_isp_dict(self, new_isp_dict: dict, path: str) -> None:
+        """Update the stored ISP dict and clear aliases if the name list changed."""
+        old_names = {v["display_name"].lower() for v in self._isp_dict.values()}
+        new_names = {v["display_name"].lower() for v in new_isp_dict.values()}
+        if old_names != new_names:
+            self._aliases = {}
+            settings_mod.save_aliases({})
+        self._isp_dict = new_isp_dict
+        self._isp_path = path
+
     def _browse_isp(self) -> None:
         path = filedialog.askopenfilename(
             title="Select ISP Reference List",
@@ -304,8 +316,8 @@ class MainWindow(tk.Tk):
             return
         try:
             self._set_status("Loading ISP list…")
-            self._isp_dict = isp_reader.load(path)
-            self._isp_path = path
+            new_isp_dict = isp_reader.load(path)
+            self._apply_isp_dict(new_isp_dict, path)
             fname = Path(path).name
             self._isp_status.configure(
                 text=f"✓  {fname}  ({len(self._isp_dict)} instructors)",
@@ -361,7 +373,8 @@ class MainWindow(tk.Tk):
             # Always reload ISP list from disk so any edits to the Excel file
             # (tax rates, new instructors, etc.) are picked up immediately.
             self._set_status("Reloading ISP list from disk…")
-            self._isp_dict = isp_reader.load(self._isp_path)
+            new_isp_dict = isp_reader.load(self._isp_path)
+            self._apply_isp_dict(new_isp_dict, self._isp_path)
             fname = Path(self._isp_path).name
             self._isp_status.configure(
                 text=f"✓  {fname}  ({len(self._isp_dict)} instructors)",
@@ -372,20 +385,45 @@ class MainWindow(tk.Tk):
             self._settings = settings_mod.load()
             commission_rate = self._settings.get("commission_rate", 5.0) / 100.0
             summaries, warns = calculator.summarise(
-                self._raw_df, self._isp_dict, commission_rate
+                self._raw_df, self._isp_dict, commission_rate, self._aliases
             )
+
+            # --- ISP alias resolution ---
+            # Collect names still unmatched after applying saved aliases
+            import re as _re
+            _pat = _re.compile(r"^'(.+)' was not found")
+            unmatched = [
+                m.group(1) for w in warns
+                for m in [_pat.match(w)] if m
+                and m.group(1).lower() not in self._aliases
+            ]
+            if unmatched:
+                isp_names = [
+                    v["display_name"] for v in self._isp_dict.values()
+                ]
+                dlg = AliasDialog(self, unmatched, isp_names, self._aliases)
+                self.wait_window(dlg)
+                if dlg.result:
+                    self._aliases.update(dlg.result)
+                    settings_mod.save_aliases(self._aliases)
+                    # Re-run with the new aliases applied
+                    summaries, warns = calculator.summarise(
+                        self._raw_df, self._isp_dict,
+                        commission_rate, self._aliases
+                    )
+
             self._summaries = summaries
             self._populate_notebook(summaries)
             self._pdf_btn.configure(state="normal")
             self._xlsx_btn.configure(state="normal")
 
+            # Remaining warnings (truly unmapped names)
+            still_unmatched = [
+                w for w in warns if "was not found" in w
+            ]
             msg = f"Summary generated for {len(summaries)} group(s)."
-            if warns:
-                msg += "  Warnings: " + " | ".join(warns)
-                messagebox.showwarning(
-                    "ISP Lookup Warnings",
-                    "\n".join(warns),
-                )
+            if still_unmatched:
+                msg += "  Some instructors have no ISP match (EWT = 0)."
             self._set_status(msg)
         except Exception as exc:
             messagebox.showerror("Generation Error", str(exc))
@@ -445,7 +483,8 @@ class MainWindow(tk.Tk):
 
         for group_name, data in summaries.items():
             frame = ttk.Frame(self._notebook)
-            self._notebook.add(frame, text=group_name.title())
+            from core.calculator import tab_label
+            self._notebook.add(frame, text=tab_label(group_name))
             self._build_treeview(frame, data)
 
     def _build_treeview(self, parent: ttk.Frame, data: dict) -> None:
@@ -524,6 +563,17 @@ def _fmt(value) -> str:
         return str(value)
 
 
+def _fmt_qty(value) -> str:
+    """1.0 → '1',  0.5 → '0.5',  9.5 → '9.5'"""
+    if value is None:
+        return ""
+    try:
+        q = float(value)
+        return str(int(q)) if q == int(q) else f"{q:g}"
+    except (TypeError, ValueError):
+        return str(value)
+
+
 def _format_row(row, is_total: bool = False) -> tuple:
     # Show EWT rate as a percentage string (e.g. "5.00%")
     ewt_rate = row.get("ewt_rate") if hasattr(row, "get") else row["ewt_rate"]
@@ -531,7 +581,7 @@ def _format_row(row, is_total: bool = False) -> tuple:
     return (
         row["item"],
         _fmt(row["min_unit_price"]),
-        str(int(row["sum_qty"])),
+        _fmt_qty(row["sum_qty"]),
         _fmt(row["sum_amt"]),
         _fmt(row["comm"]),
         _fmt(row["total"]),
@@ -546,7 +596,7 @@ def _format_grand_total(gt: dict) -> tuple:
     return (
         gt["item"],
         "",
-        str(gt["sum_qty"]),
+        _fmt_qty(gt["sum_qty"]),
         _fmt(gt["sum_amt"]),
         _fmt(gt["comm"]),
         _fmt(gt["total"]),

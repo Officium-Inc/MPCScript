@@ -151,10 +151,11 @@ def _write_sheet(wb: Workbook, group_name: str, data: dict, settings: dict) -> N
     data_start_row = 5
     for row_num, (_, row) in enumerate(rows_df.iterrows(), start=data_start_row):
         fill = FILL_ALT if row_num % 2 == 0 else FILL_NONE
+        qty = float(row["sum_qty"])
         values = [
             row["item"],
             row["min_unit_price"],
-            int(row["sum_qty"]),
+            int(qty) if qty == int(qty) else qty,   # 1.0→1, 0.5→0.5
             row["sum_amt"],
             row["comm"],
             row["total"],

@@ -4,6 +4,7 @@ from pathlib import Path
 
 APPDATA_DIR = Path(os.environ.get("APPDATA", Path.home())) / "MPCScript"
 SETTINGS_FILE = APPDATA_DIR / "settings.json"
+ALIASES_FILE  = APPDATA_DIR / "aliases.json"
 
 DEFAULTS: dict = {
     "prepared_by_name": "Gilfred C. Sale",
@@ -32,3 +33,22 @@ def save(settings: dict) -> None:
     APPDATA_DIR.mkdir(parents=True, exist_ok=True)
     with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
         json.dump(settings, f, indent=2)
+
+
+def load_aliases() -> dict:
+    """Load saved {pos_name_lower: isp_display_name_or_None} alias mappings."""
+    APPDATA_DIR.mkdir(parents=True, exist_ok=True)
+    if ALIASES_FILE.exists():
+        try:
+            with open(ALIASES_FILE, encoding="utf-8") as f:
+                return json.load(f)
+        except (json.JSONDecodeError, OSError):
+            pass
+    return {}
+
+
+def save_aliases(aliases: dict) -> None:
+    """Persist alias mappings to disk."""
+    APPDATA_DIR.mkdir(parents=True, exist_ok=True)
+    with open(ALIASES_FILE, "w", encoding="utf-8") as f:
+        json.dump(aliases, f, indent=2)

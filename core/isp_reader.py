@@ -29,7 +29,20 @@ def load(filepath: str) -> dict:
     path = Path(filepath)
     engine = "xlrd" if path.suffix.lower() == ".xls" else "openpyxl"
 
-    df = pd.read_excel(filepath, engine=engine)
+    # --- Step 1: find the actual column-header row ---
+    # The file may have several title rows before the real headers
+    # (e.g. "S&A ISP INVOICING", date range, totals row …).
+    raw = pd.read_excel(filepath, engine=engine, header=None, nrows=20)
+    header_row_idx = _find_header_row(raw)
+    if header_row_idx == -1:
+        raise ValueError(
+            "This file does not appear to be an ISP Reference List.\n"
+            "Expected a row containing headers such as "
+            "'ISP Name', 'Tax Rate', 'TIN No.', or 'Sworn Declaration'."
+        )
+
+    # --- Step 2: re-read using the detected header row ---
+    df = pd.read_excel(filepath, engine=engine, header=header_row_idx)
     df.columns = [str(c).strip() for c in df.columns]
 
     col_map = _map_columns(df.columns.tolist())
@@ -68,6 +81,24 @@ def load(filepath: str) -> dict:
 # Internal helpers
 # ---------------------------------------------------------------------------
 
+_HEADER_KEYWORDS = {"isp name", "tax rate", "sworn", "tin no", "acct no"}
+
+
+def _find_header_row(raw_df: pd.DataFrame) -> int:
+    """Return the 0-based row index of the ISP column-header row, or -1 if not found."""
+    for i, row in raw_df.iterrows():
+        cells = {str(v).lower().strip() for v in row if str(v).lower() != "nan"}
+        matches = sum(1 for kw in _HEADER_KEYWORDS if any(kw in c for c in cells))
+        if matches >= 2:
+            return int(i)
+    return -1
+
+
+# Keep for backward compatibility (used nowhere else, but harmless)
+def _validate_isp_headers(columns: list) -> None:
+    pass
+
+
 def _map_columns(columns: list) -> dict:
     """Map logical names to actual column names using keyword matching."""
     col_map: dict = {}
@@ -96,10 +127,14 @@ def _map_columns(columns: list) -> dict:
 
 
 def _parse_rate(value: str) -> float:
-    """Parse '5%' → 0.05, '0.05' → 0.05, '5' → 0.05."""
-    value = value.replace("%", "").strip()
+    """Parse '5%' → 0.05, '0.05' → 0.05, '5' → 0.05, blank/nan → 0.0."""
+    value = str(value).replace("%", "").strip()
+    if not value or value.lower() == "nan":
+        return 0.0
     try:
         rate = float(value)
+        if rate != rate:   # IEEE NaN guard
+            return 0.0
         return rate / 100.0 if rate > 1.0 else rate
     except ValueError:
         return 0.0

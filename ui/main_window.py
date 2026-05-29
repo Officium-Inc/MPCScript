@@ -26,6 +26,7 @@ Layout:
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
+from PIL import Image, ImageTk
 
 import config.settings as settings_mod
 import core.calculator as calculator
@@ -83,10 +84,34 @@ class MainWindow(tk.Tk):
         self._ast_summaries: dict = {}
         self._ast_tab_ids: list = []  # notebook tab widget IDs for AST tabs
 
+        self._load_logo()
         self._apply_styles()
         self._build_header()
         self._build_body()
         self._build_statusbar()
+
+    # ------------------------------------------------------------------
+    # Logo loading
+    # ------------------------------------------------------------------
+
+    def _load_logo(self) -> None:
+        logo_path = Path(__file__).parent / "src" / "MPC-LOGO-white-text-1.png"
+        self._logo_img_header = None
+        self._logo_img_icon   = None
+        if logo_path.exists():
+            try:
+                img = Image.open(logo_path).convert("RGBA")
+                # Window icon (32×32)
+                icon_img = img.copy()
+                icon_img.thumbnail((32, 32), Image.LANCZOS)
+                self._logo_img_icon = ImageTk.PhotoImage(icon_img)
+                self.iconphoto(True, self._logo_img_icon)
+                # Header logo (36px tall, preserve aspect ratio)
+                hdr_img = img.copy()
+                hdr_img.thumbnail((9999, 36), Image.LANCZOS)
+                self._logo_img_header = ImageTk.PhotoImage(hdr_img)
+            except Exception:
+                pass
 
     # ------------------------------------------------------------------
     # ttk styling
@@ -150,12 +175,19 @@ class MainWindow(tk.Tk):
         header.pack(fill="x", side="top")
         header.pack_propagate(False)
 
+        if self._logo_img_header:
+            tk.Label(
+                header,
+                image=self._logo_img_header,
+                bg=COLOR_NAVY,
+            ).pack(side="left", padx=(12, 6), pady=7)
+
         tk.Label(
             header,
             text="Manila Polo Club  —  Instructor Fee Summary",
             bg=COLOR_NAVY, fg=COLOR_WHITE,
             font=("Segoe UI", 13, "bold"),
-        ).pack(side="left", padx=16, pady=10)
+        ).pack(side="left", padx=(0, 16), pady=10)
 
         tk.Button(
             header,

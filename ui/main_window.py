@@ -33,6 +33,9 @@ import core.excel_exporter as excel_exporter
 import core.isp_reader as isp_reader
 import core.pdf_exporter as pdf_exporter
 import core.raw_data_reader as raw_data_reader
+import core.ast_reader as ast_reader
+import core.ast_pdf_exporter as ast_pdf_exporter
+import core.ast_excel_exporter as ast_excel_exporter
 from ui.settings_dialog import SettingsDialog
 from ui.alias_dialog import AliasDialog
 
@@ -76,6 +79,9 @@ class MainWindow(tk.Tk):
         self._summaries: dict = {}
         self._aliases: dict = settings_mod.load_aliases()
         self._settings: dict = settings_mod.load()
+        self._ast_path: str = ""
+        self._ast_summaries: dict = {}
+        self._ast_tab_ids: list = []  # notebook tab widget IDs for AST tabs
 
         self._apply_styles()
         self._build_header()
@@ -245,6 +251,56 @@ class MainWindow(tk.Tk):
         )
         self._xlsx_btn.pack(fill="x", padx=14, pady=4)
 
+        ttk.Separator(parent, orient="horizontal").pack(fill="x", padx=10, pady=8)
+
+        # ---- AST Fee File (alternative to POS Raw Data) ----
+        tk.Label(
+            parent,
+            text="— or —",
+            bg=COLOR_PANEL, fg=COLOR_GREY,
+            font=("Segoe UI", 8, "italic"),
+        ).pack(anchor="center", pady=(0, 2))
+
+        ttk.Label(parent, text="AST Fee File",
+                  style="Step.TLabel").pack(anchor="w", **pad)
+
+        self._ast_status = ttk.Label(parent, text="Load ISP file first", style="Warn.TLabel")
+        self._ast_status.pack(anchor="w", padx=14, pady=0)
+
+        self._ast_browse_btn = ttk.Button(
+            parent, text="Browse AST File…",
+            style="Flat.TButton", command=self._browse_ast,
+            state="disabled",
+        )
+        self._ast_browse_btn.pack(anchor="w", **pad)
+
+        ttk.Separator(parent, orient="horizontal").pack(fill="x", padx=10, pady=8)
+
+        self._ast_gen_btn = ttk.Button(
+            parent, text="▶  Generate AST Report",
+            style="Primary.TButton", command=self._generate_ast,
+            state="disabled",
+        )
+        self._ast_gen_btn.pack(fill="x", padx=14, pady=4)
+
+        ttk.Separator(parent, orient="horizontal").pack(fill="x", padx=10, pady=8)
+
+        ttk.Label(parent, text="Export AST", style="Step.TLabel").pack(anchor="w", **pad)
+
+        self._ast_pdf_btn = ttk.Button(
+            parent, text="⬇  Export AST PDF",
+            style="Accent.TButton", command=self._export_ast_pdf,
+            state="disabled",
+        )
+        self._ast_pdf_btn.pack(fill="x", padx=14, pady=4)
+
+        self._ast_xlsx_btn = ttk.Button(
+            parent, text="⬇  Export AST Excel",
+            style="Accent.TButton", command=self._export_ast_excel,
+            state="disabled",
+        )
+        self._ast_xlsx_btn.pack(fill="x", padx=14, pady=4)
+
     def _build_right_panel(self, parent: ttk.Frame) -> None:
         # Placeholder label shown before generation
         self._placeholder = tk.Label(
@@ -325,6 +381,9 @@ class MainWindow(tk.Tk):
             )
             self._raw_btn.configure(state="normal")
             self._raw_status.configure(text="No file loaded", style="Warn.TLabel")
+            self._ast_browse_btn.configure(state="normal")
+            if self._ast_status.cget("text") == "Load ISP file first":
+                self._ast_status.configure(text="No file loaded", style="Warn.TLabel")
             self._set_status(f"ISP list loaded: {len(self._isp_dict)} record(s).")
         except Exception as exc:
             messagebox.showerror("ISP File Error", str(exc))
@@ -548,6 +607,260 @@ class MainWindow(tk.Tk):
             values=_format_grand_total(gt),
             tags=("grand_total",),
         )
+
+    # ------------------------------------------------------------------
+    # AST actions
+    # ------------------------------------------------------------------
+
+    def _browse_ast(self) -> None:
+        path = filedialog.askopenfilename(
+            title="Select AST Fee File",
+            filetypes=[
+                ("Excel files", "*.xlsx *.xls"),
+                ("All files", "*.*"),
+            ],
+        )
+        if not path:
+            return
+        try:
+            self._set_status("Reading AST file…")
+            summaries = ast_reader.load(path)
+            self._ast_path = path
+            self._ast_summaries = {}   # clear old summaries
+            fname = Path(path).name
+            groups = ", ".join(summaries.keys())
+            self._ast_status.configure(
+                text=f"✓  {fname}",
+                style="OK.TLabel",
+            )
+            self._ast_gen_btn.configure(state="normal")
+            self._set_status(f"AST file loaded: {groups}.")
+        except Exception as exc:
+            messagebox.showerror("AST File Error", str(exc))
+            self._set_status("Error loading AST file.")
+
+    def _generate_ast(self) -> None:
+        if not self._isp_path:
+            messagebox.showwarning("Missing Data", "Please load the ISP file first.")
+            return
+        if not self._ast_path:
+            messagebox.showwarning("Missing Data", "Please load an AST fee file first.")
+            return
+        try:
+            self._set_status("Generating AST report…")
+            self._settings = settings_mod.load()
+            summaries = ast_reader.load(self._ast_path)
+            self._ast_summaries = summaries
+            self._populate_ast_notebook(summaries)
+            self._ast_pdf_btn.configure(state="normal")
+            self._ast_xlsx_btn.configure(state="normal")
+            self._set_status(f"AST report generated: {len(summaries)} group(s).")
+        except Exception as exc:
+            messagebox.showerror("AST Generation Error", str(exc))
+            self._set_status("Error generating AST report.")
+
+    def _export_ast_pdf(self) -> None:
+        if not self._ast_summaries:
+            return
+        path = filedialog.asksaveasfilename(
+            title="Save AST PDF Report",
+            defaultextension=".pdf",
+            filetypes=[("PDF files", "*.pdf"), ("All files", "*.*")],
+            initialfile="AST_Fee_Report.pdf",
+        )
+        if not path:
+            return
+        try:
+            self._set_status("Exporting AST PDF…")
+            ast_pdf_exporter.export(self._ast_summaries, self._settings, path)
+            self._set_status(f"AST PDF saved: {path}")
+            messagebox.showinfo("Export Complete", f"AST PDF saved to:\n{path}")
+        except Exception as exc:
+            messagebox.showerror("AST PDF Export Error", str(exc))
+            self._set_status("Error exporting AST PDF.")
+
+    def _export_ast_excel(self) -> None:
+        if not self._ast_summaries:
+            return
+        path = filedialog.asksaveasfilename(
+            title="Save AST Excel Report",
+            defaultextension=".xlsx",
+            filetypes=[("Excel files", "*.xlsx"), ("All files", "*.*")],
+            initialfile="AST_Fee_Report.xlsx",
+        )
+        if not path:
+            return
+        try:
+            self._set_status("Exporting AST Excel…")
+            ast_excel_exporter.export(self._ast_summaries, self._settings, path)
+            self._set_status(f"AST Excel saved: {path}")
+            messagebox.showinfo("Export Complete", f"AST Excel saved to:\n{path}")
+        except Exception as exc:
+            messagebox.showerror("AST Excel Export Error", str(exc))
+            self._set_status("Error exporting AST Excel.")
+
+    def _populate_ast_notebook(self, summaries: dict) -> None:
+        # Remove previous AST tabs
+        for tab_id in self._ast_tab_ids:
+            try:
+                self._notebook.forget(tab_id)
+            except Exception:
+                pass
+        self._ast_tab_ids = []
+
+        # Make sure notebook is visible
+        self._placeholder.pack_forget()
+        self._notebook.pack(fill="both", expand=True)
+
+        for label, data in summaries.items():
+            frame = ttk.Frame(self._notebook)
+            self._notebook.add(frame, text=label)
+            self._ast_tab_ids.append(self._notebook.tabs()[-1])
+            self._build_ast_treeview(frame, data)
+
+    def _build_ast_treeview(self, parent: ttk.Frame, data: dict) -> None:
+        grp_type = data.get("type", "BALLBOY")
+        date_str = data.get("date_str", "")
+        day_cols = data.get("day_cols", [])   # [(key, label), ...]
+
+        tk.Label(
+            parent,
+            text=date_str,
+            bg=COLOR_BG, fg=COLOR_GREY,
+            font=("Segoe UI", 9),
+            anchor="e",
+        ).pack(fill="x", padx=8, pady=(4, 0))
+
+        container = ttk.Frame(parent)
+        container.pack(fill="both", expand=True, padx=8, pady=6)
+
+        vsb = ttk.Scrollbar(container, orient="vertical")
+        hsb = ttk.Scrollbar(container, orient="horizontal")
+
+        # Build column definitions dynamically
+        if grp_type == "TRAINER":
+            fixed_after = [
+                ("hours",        "Total Hrs",   55, "e"),
+                ("rate",         "Rate",         60, "e"),
+                ("total_amount", "Total Amt",   90, "e"),
+                ("vat",          "VAT (12%)",   78, "e"),
+                ("ex_vat",       "Ex-VAT",       88, "e"),
+                ("commission",   "5% Comm",      75, "e"),
+                ("net_amount",   "Net Amount",   90, "e"),
+                ("ewt",          "EWT",          65, "e"),
+                ("net_final",    "Final Net",    88, "e"),
+            ]
+        else:
+            fixed_after = [
+                ("hours",     "Total Hrs",  65, "e"),
+                ("rate",      "Rate",        70, "e"),
+                ("total",     "Total Amt",  100, "e"),
+                ("vat",       "VAT (12%)",   88, "e"),
+                ("net_total", "Net Total",  100, "e"),
+            ]
+
+        col_defs = (
+            [("name", "Name", 160, "w")]
+            + [(key, lbl, 50, "e") for (key, lbl) in day_cols]
+            + fixed_after
+        )
+        col_ids = [c[0] for c in col_defs]
+
+        tree = ttk.Treeview(
+            container,
+            columns=col_ids,
+            show="headings",
+            yscrollcommand=vsb.set,
+            xscrollcommand=hsb.set,
+        )
+        vsb.configure(command=tree.yview)
+        hsb.configure(command=tree.xview)
+        vsb.pack(side="right", fill="y")
+        hsb.pack(side="bottom", fill="x")
+        tree.pack(fill="both", expand=True)
+
+        for col_id, heading, width, anchor in col_defs:
+            tree.heading(col_id, text=heading)
+            tree.column(col_id, width=width, anchor=anchor, minwidth=40)
+
+        tree.tag_configure("alt",         background=COLOR_ALT)
+        tree.tag_configure("grand_total", background=COLOR_GT_BG,
+                           font=("Segoe UI", 9, "bold"))
+
+        df = data["rows"]
+        for idx, (_, row) in enumerate(df.iterrows()):
+            tag = "alt" if idx % 2 == 1 else ""
+            if grp_type == "TRAINER":
+                day_vals = [_fmt_qty(row.get(key, 0)) for (key, _) in day_cols]
+                vals = tuple(
+                    [row["name"]]
+                    + day_vals
+                    + [
+                        _fmt_qty(row["hours"]),
+                        _fmt(row["rate"]),
+                        _fmt(row["total_amount"]),
+                        _fmt(row["vat"]),
+                        _fmt(row["ex_vat"]),
+                        _fmt(row["commission"]),
+                        _fmt(row["net_amount"]),
+                        _fmt(row["ewt"]),
+                        _fmt(row["net_final"]),
+                    ]
+                )
+            else:
+                day_vals = [_fmt_qty(row.get(key, 0)) for (key, _) in day_cols]
+                vals = tuple(
+                    [row["name"]]
+                    + day_vals
+                    + [
+                        _fmt_qty(row["hours"]),
+                        _fmt(row["rate"]),
+                        _fmt(row["total"]),
+                        _fmt(row["vat"]),
+                        _fmt(row["net_total"]),
+                    ]
+                )
+            tree.insert("", "end", values=vals, tags=(tag,))
+
+        # Grand total row
+        grand_total = data["grand_total"]
+        if grp_type == "TRAINER":
+            day_sums = [
+                _fmt_qty(float(df[key].sum())) if key in df.columns and not df.empty else ""
+                for (key, _) in day_cols
+            ]
+            gt_vals = tuple(
+                ["GRAND TOTAL"]
+                + day_sums
+                + [
+                    _fmt_qty(df["hours"].sum()       if not df.empty else 0),
+                    "",
+                    _fmt(df["total_amount"].sum()     if not df.empty else 0),
+                    _fmt(df["vat"].sum()              if not df.empty else 0),
+                    _fmt(df["ex_vat"].sum()           if not df.empty else 0),
+                    _fmt(df["commission"].sum()       if not df.empty else 0),
+                    _fmt(df["net_amount"].sum()       if not df.empty else 0),
+                    _fmt(df["ewt"].sum()              if not df.empty else 0),
+                    _fmt(grand_total),
+                ]
+            )
+        else:
+            day_sums = [
+                _fmt_qty(float(df[key].sum())) if key in df.columns and not df.empty else ""
+                for (key, _) in day_cols
+            ]
+            gt_vals = tuple(
+                ["GRAND TOTAL"]
+                + day_sums
+                + [
+                    _fmt_qty(df["hours"].sum() if not df.empty else 0),
+                    "",
+                    _fmt(df["total"].sum()     if not df.empty else 0),
+                    _fmt(df["vat"].sum()       if not df.empty else 0),
+                    _fmt(grand_total),
+                ]
+            )
+        tree.insert("", "end", values=gt_vals, tags=("grand_total",))
 
 
 # ---------------------------------------------------------------------------

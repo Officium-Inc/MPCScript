@@ -52,6 +52,7 @@ def summarise(
         aliases = {}
     warnings: list = []
     summaries: dict = {}
+    isp_matchers = _build_isp_matchers(isp_dict)
 
     for (group_name, center_name), group_df in df.groupby(
         ["income_center_group", "income_center"], sort=True
@@ -63,17 +64,17 @@ def summarise(
             if not instructor_stripped:
                 continue
 
-            # ISP lookup — apply alias first, then fall back to exact match
-            lookup_key = instructor_stripped.lower()
-            if lookup_key in aliases and aliases[lookup_key] is not None:
-                lookup_key = aliases[lookup_key].lower()
-            isp_info = isp_dict.get(lookup_key)
+            # ISP lookup: aliases, exact ISP name, then ISP-name prefix.
+            isp_info, trainer_name = _resolve_isp_info(
+                instructor_stripped, isp_dict, aliases, isp_matchers
+            )
             if isp_info is None:
                 warnings.append(
                     f"'{instructor_stripped}' was not found in the ISP list. "
                     "EWT set to 0."
                 )
                 ewt_rate = 0.0
+                trainer_name = instructor_stripped
             else:
                 ewt_rate = isp_info["tax_rate"]
 
@@ -87,6 +88,7 @@ def summarise(
 
             rows.append({
                 "item":             instructor_stripped,
+                "trainer":          trainer_name,
                 "min_unit_price":   min_unit_price,
                 "sum_qty":          sum_qty,
                 "sum_amt":          sum_amt,
@@ -101,18 +103,9 @@ def summarise(
             continue
 
         summary_df = pd.DataFrame(rows)
+        trainer_summary_df = _build_trainer_summary(summary_df)
 
-        grand_total = {
-            "item":           "Grand Total",
-            "min_unit_price": None,
-            "sum_qty":        float(summary_df["sum_qty"].sum()),   # keep float
-            "sum_amt":        _r2(float(summary_df["sum_amt"].sum())),
-            "comm":           _r2(float(summary_df["comm"].sum())),
-            "total":          _r2(float(summary_df["total"].sum())),
-            "ewt_rate":       None,
-            "ewt":            _r2(float(summary_df["ewt"].sum())),
-            "final_total":    _r2(float(summary_df["final_total"].sum())),
-        }
+        grand_total = _build_grand_total(summary_df)
 
         # Date range from the raw transactions in this group
         dates = pd.to_datetime(group_df["date"], errors="coerce").dropna()
@@ -121,6 +114,8 @@ def summarise(
 
         summaries[center_name] = {
             "rows":               summary_df,
+            "trainer_summary":    trainer_summary_df,
+            "trainer_grand_total": _build_grand_total(trainer_summary_df),
             "grand_total":        grand_total,
             "date_min":           date_min,
             "date_max":           date_max,
@@ -138,6 +133,99 @@ def summarise(
 def _r2(value: float) -> float:
     """Round to 2 decimal places using standard rounding."""
     return round(value, 2)
+
+
+def _normalise_name(value: str) -> str:
+    """Lowercase and collapse whitespace for name matching."""
+    return _re.sub(r"\s+", " ", str(value).strip().lower())
+
+
+def _build_isp_matchers(isp_dict: dict) -> list[tuple[str, dict]]:
+    """Return ISP records sorted longest-name first for prefix matching."""
+    return sorted(
+        ((_normalise_name(v["display_name"]), v) for v in isp_dict.values()),
+        key=lambda item: len(item[0]),
+        reverse=True,
+    )
+
+
+def _resolve_isp_info(
+    instructor_name: str,
+    isp_dict: dict,
+    aliases: dict,
+    isp_matchers: list[tuple[str, dict]],
+) -> tuple[dict | None, str]:
+    """
+    Resolve a POS item name to an ISP record and display trainer name.
+
+    Exact aliases keep their existing behavior. If no alias exists, a POS item
+    can still match an ISP name when the ISP name is the leading part of the
+    item, e.g. "Catalino Casas 2kids" -> "Catalino Casas".
+    """
+    lookup_key = _normalise_name(instructor_name)
+    if lookup_key in aliases:
+        alias_value = aliases[lookup_key]
+        if alias_value is None:
+            return None, instructor_name
+        lookup_key = _normalise_name(alias_value)
+        isp_info = isp_dict.get(lookup_key)
+        return isp_info, isp_info["display_name"] if isp_info else str(alias_value)
+
+    isp_info = isp_dict.get(lookup_key)
+    if isp_info:
+        return isp_info, isp_info["display_name"]
+
+    for isp_name, candidate_info in isp_matchers:
+        if _is_name_prefix(lookup_key, isp_name):
+            return candidate_info, candidate_info["display_name"]
+
+    return None, instructor_name
+
+
+def _is_name_prefix(item_name: str, isp_name: str) -> bool:
+    """Match exact names or names followed by a separator/suffix."""
+    if item_name == isp_name:
+        return True
+    if not item_name.startswith(isp_name):
+        return False
+    suffix = item_name[len(isp_name):]
+    return bool(suffix) and suffix[0] in {" ", "-", "/", "(", "["}
+
+
+def _build_trainer_summary(summary_df: pd.DataFrame) -> pd.DataFrame:
+    """Collapse detail rows to one row per resolved ISP trainer."""
+    summary_rows = []
+    for trainer, trainer_df in summary_df.groupby("trainer", sort=True):
+        rates = trainer_df["ewt_rate"].dropna().unique()
+        ewt_rate = float(rates[0]) if len(rates) else 0.0
+        summary_rows.append({
+            "item":             trainer,
+            "trainer":          trainer,
+            "min_unit_price":   None,
+            "sum_qty":          float(trainer_df["sum_qty"].sum()),
+            "sum_amt":          _r2(float(trainer_df["sum_amt"].sum())),
+            "comm":             _r2(float(trainer_df["comm"].sum())),
+            "total":            _r2(float(trainer_df["total"].sum())),
+            "ewt_rate":         ewt_rate,
+            "ewt":              _r2(float(trainer_df["ewt"].sum())),
+            "final_total":      _r2(float(trainer_df["final_total"].sum())),
+        })
+    return pd.DataFrame(summary_rows)
+
+
+def _build_grand_total(summary_df: pd.DataFrame) -> dict:
+    """Build a grand-total row for any calculator summary DataFrame."""
+    return {
+        "item":           "Grand Total",
+        "min_unit_price": None,
+        "sum_qty":        float(summary_df["sum_qty"].sum()),
+        "sum_amt":        _r2(float(summary_df["sum_amt"].sum())),
+        "comm":           _r2(float(summary_df["comm"].sum())),
+        "total":          _r2(float(summary_df["total"].sum())),
+        "ewt_rate":       None,
+        "ewt":            _r2(float(summary_df["ewt"].sum())),
+        "final_total":    _r2(float(summary_df["final_total"].sum())),
+    }
 
 
 def format_date_range(date_min: datetime, date_max: datetime) -> str:

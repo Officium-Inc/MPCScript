@@ -15,6 +15,7 @@ One sheet per Income Center Group, layout matching the sample:
   +1     Signatory titles row
 """
 from pathlib import Path
+import re
 
 from openpyxl import Workbook
 from openpyxl.styles import (
@@ -26,7 +27,7 @@ from openpyxl.styles import (
 )
 from openpyxl.utils import get_column_letter
 
-from core.calculator import format_date_range, group_to_title
+from core.calculator import format_date_range, group_to_title, tab_label
 
 # ---------------------------------------------------------------------------
 # Colour constants  (ARGB strings used by openpyxl)
@@ -94,6 +95,8 @@ def export(summaries: dict, settings: dict, output_path: str) -> None:
 
     for group_name, data in summaries.items():
         _write_sheet(wb, group_name, data, settings)
+        if "trainer_summary" in data and "trainer_grand_total" in data:
+            _write_sheet(wb, group_name, data, settings, summary=True)
 
     wb.save(output_path)
 
@@ -102,14 +105,21 @@ def export(summaries: dict, settings: dict, output_path: str) -> None:
 # Sheet builder
 # ---------------------------------------------------------------------------
 
-def _write_sheet(wb: Workbook, group_name: str, data: dict, settings: dict) -> None:
-    title_text  = group_to_title(group_name)
+def _write_sheet(
+    wb: Workbook,
+    group_name: str,
+    data: dict,
+    settings: dict,
+    summary: bool = False,
+) -> None:
+    title_text  = f"{tab_label(group_name)} (Summary)" if summary else group_to_title(group_name)
     date_range  = format_date_range(data["date_min"], data["date_max"])
-    rows_df     = data["rows"]
-    grand_total = data["grand_total"]
+    rows_df     = data["trainer_summary"] if summary else data["rows"]
+    grand_total = data["trainer_grand_total"] if summary else data["grand_total"]
 
     # Sheet name: max 31 chars, strip invalid chars
-    sheet_name = group_name.title()[:31]
+    sheet_base = f"{tab_label(group_name)} (Summary)" if summary else group_name.title()
+    sheet_name = _safe_sheet_name(sheet_base, set(wb.sheetnames))
     ws = wb.create_sheet(title=sheet_name)
 
     # Set column widths
@@ -297,3 +307,18 @@ def _box_range(ws, r1, c1, r2, c2):
             left   = THIN_SIDE if col_idx == c1 else Side()
             right  = THIN_SIDE if col_idx == c2 else Side()
             cell.border = Border(top=top, bottom=bottom, left=left, right=right)
+
+
+def _safe_sheet_name(raw_name: str, existing_names: set[str]) -> str:
+    """Make a valid, unique Excel sheet name."""
+    cleaned = re.sub(r"[\[\]:*?/\\]", " ", str(raw_name)).strip("' ")
+    cleaned = re.sub(r"\s+", " ", cleaned) or "Sheet"
+
+    base = cleaned[:31]
+    name = base
+    counter = 2
+    while name in existing_names:
+        suffix = f" ({counter})"
+        name = f"{base[:31 - len(suffix)]}{suffix}"
+        counter += 1
+    return name

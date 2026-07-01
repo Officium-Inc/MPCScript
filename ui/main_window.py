@@ -578,6 +578,11 @@ class MainWindow(tk.Tk):
             self._notebook.add(frame, text=tab_label(group_name))
             self._build_treeview(frame, data)
 
+            if "trainer_summary" in data and "trainer_grand_total" in data:
+                summary_frame = ttk.Frame(self._notebook)
+                self._notebook.add(summary_frame, text=f"{tab_label(group_name)} (Summary)")
+                self._build_summary_treeview(summary_frame, data)
+
     def _build_treeview(self, parent: ttk.Frame, data: dict) -> None:
         from core.calculator import format_date_range, group_to_title
 
@@ -639,6 +644,117 @@ class MainWindow(tk.Tk):
             values=_format_grand_total(gt),
             tags=("grand_total",),
         )
+
+    def _build_summary_treeview(self, parent: ttk.Frame, data: dict) -> None:
+        from core.calculator import format_date_range
+
+        date_range = format_date_range(data["date_min"], data["date_max"])
+        tk.Label(
+            parent,
+            text=date_range,
+            bg=COLOR_BG, fg=COLOR_GREY,
+            font=("Segoe UI", 9),
+            anchor="e",
+        ).pack(fill="x", padx=8, pady=(4, 0))
+
+        panes = ttk.PanedWindow(parent, orient="vertical")
+        panes.pack(fill="both", expand=True, padx=8, pady=6)
+
+        summary_frame = ttk.Frame(panes)
+        breakdown_frame = ttk.Frame(panes)
+        panes.add(summary_frame, weight=2)
+        panes.add(breakdown_frame, weight=1)
+
+        summary_tree = self._create_fee_tree(summary_frame)
+        breakdown_tree = self._create_fee_tree(breakdown_frame)
+
+        summary_rows = data["trainer_summary"]
+        trainer_by_iid = {}
+        total_by_iid = {}
+        for idx, (_, row) in enumerate(summary_rows.iterrows()):
+            tag = "alt" if idx % 2 == 1 else ""
+            iid = f"trainer_{idx}"
+            trainer_by_iid[iid] = row["trainer"]
+            total_by_iid[iid] = row.to_dict()
+            summary_tree.insert(
+                "", "end", iid=iid,
+                values=_format_row(row, is_total=False),
+                tags=(tag,),
+            )
+
+        grand_iid = "grand_total"
+        trainer_by_iid[grand_iid] = None
+        total_by_iid[grand_iid] = data["trainer_grand_total"]
+        summary_tree.insert(
+            "", "end", iid=grand_iid,
+            values=_format_grand_total(data["trainer_grand_total"]),
+            tags=("grand_total",),
+        )
+
+        def show_breakdown(_event=None) -> None:
+            selected = summary_tree.selection()
+            if not selected:
+                return
+            iid = selected[0]
+            trainer = trainer_by_iid.get(iid)
+            if trainer is None:
+                rows_df = data["rows"]
+                total = data["grand_total"]
+            else:
+                rows_df = data["rows"][data["rows"]["trainer"] == trainer]
+                total = dict(total_by_iid[iid])
+                total["item"] = "Subtotal"
+
+            for child in breakdown_tree.get_children():
+                breakdown_tree.delete(child)
+            for idx, (_, row) in enumerate(rows_df.iterrows()):
+                tag = "alt" if idx % 2 == 1 else ""
+                breakdown_tree.insert(
+                    "", "end",
+                    values=_format_row(row, is_total=False),
+                    tags=(tag,),
+                )
+            breakdown_tree.insert(
+                "", "end",
+                values=_format_grand_total(total),
+                tags=("grand_total",),
+            )
+
+        summary_tree.bind("<<TreeviewSelect>>", show_breakdown)
+        first_row = summary_tree.get_children()
+        if first_row:
+            summary_tree.selection_set(first_row[0])
+            show_breakdown()
+
+    def _create_fee_tree(self, parent: ttk.Frame) -> ttk.Treeview:
+        container = ttk.Frame(parent)
+        container.pack(fill="both", expand=True)
+
+        vsb = ttk.Scrollbar(container, orient="vertical")
+        hsb = ttk.Scrollbar(container, orient="horizontal")
+
+        col_ids = [c[0] for c in TREE_COLUMNS]
+        tree = ttk.Treeview(
+            container,
+            columns=col_ids,
+            show="headings",
+            yscrollcommand=vsb.set,
+            xscrollcommand=hsb.set,
+        )
+        vsb.configure(command=tree.yview)
+        hsb.configure(command=tree.xview)
+        vsb.pack(side="right", fill="y")
+        hsb.pack(side="bottom", fill="x")
+        tree.pack(fill="both", expand=True)
+
+        for col_id, heading, width, anchor in TREE_COLUMNS:
+            tree.heading(col_id, text=heading)
+            tree.column(col_id, width=width, anchor=anchor, minwidth=50)
+
+        tree.tag_configure("alt",         background=COLOR_ALT)
+        tree.tag_configure("grand_total", background=COLOR_GT_BG,
+                           font=("Segoe UI", 9, "bold"))
+        return tree
 
     # ------------------------------------------------------------------
     # AST actions
